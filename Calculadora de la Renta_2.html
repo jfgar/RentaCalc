@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Marx: Simulador Avanzado de RDII</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root { --marx: #a30000; --cap: #2c3e50; --bg: #f0f2f5; --regulador: #ff9800; --accent: #27ae60; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: var(--bg); margin: 0; padding: 20px; font-size: 13px; }
+        .main-container { max-width: 1500px; margin: auto; display: grid; grid-template-columns: 380px 1fr; gap: 20px; }
+        
+        /* Paneles */
+        .card { background: white; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); padding: 20px; margin-bottom: 20px; }
+        .sidebar { height: 95vh; overflow-y: auto; position: sticky; top: 10px; }
+        
+        /* Controles */
+        .header-tool { border-bottom: 3px solid var(--marx); margin-bottom: 15px; padding-bottom: 5px; font-weight: bold; color: var(--marx); display: flex; justify-content: space-between; }
+        .control-group { border: 1px solid #eee; padding: 12px; border-radius: 6px; margin-bottom: 10px; transition: 0.3s; }
+        .control-group:hover { border-color: var(--marx); }
+        .slider-box { display: flex; align-items: center; gap: 8px; margin: 5px 0; }
+        input[type="range"] { flex-grow: 1; accent-color: var(--marx); }
+        .val { font-family: monospace; font-weight: bold; color: var(--marx); width: 45px; }
+
+        /* Tabla y Gráficos */
+        .chart-container { height: 300px; margin-bottom: 20px; }
+        table { width: 100%; border-collapse: collapse; background: white; }
+        th { background: var(--cap); color: white; padding: 10px; font-size: 11px; text-transform: uppercase; }
+        td { border: 1px solid #eee; padding: 10px; text-align: center; }
+        
+        /* Estados */
+        .row-active { background-color: #fff; }
+        .row-regulador { background-color: #fff3e0; outline: 2px solid var(--regulador); z-index: 1; }
+        .row-inactive { background-color: #f9f9f9; color: #999; opacity: 0.6; }
+        
+        .btn { border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; font-weight: bold; transition: 0.2s; }
+        .btn-add { background: var(--accent); color: white; width: 100%; margin-top: 10px; }
+        .btn-del { background: #e74c3c; color: white; padding: 2px 6px; font-size: 10px; }
+        
+        .summary-bar { display: flex; gap: 20px; background: var(--cap); color: white; padding: 15px; border-radius: 6px; margin-bottom: 15px; }
+        .summary-item { flex: 1; text-align: center; }
+        .summary-item small { display: block; opacity: 0.8; font-size: 10px; }
+        .summary-item span { font-size: 18px; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<div class="main-container">
+    <div class="sidebar">
+        <div class="card">
+            <div class="header-tool">CONFIGURACIÓN GLOBAL</div>
+            <div class="slider-box">
+                <label style="width: 120px">Demanda Social:</label>
+                <input type="range" id="demanda" min="50" max="1000" value="250" oninput="ui.render()">
+                <span class="val" id="vDemanda">250</span>
+            </div>
+            <div style="margin-top:15px">
+                <label>Escenario de Precios:</label>
+                <select id="casoRD2" onchange="ui.render()" style="width: 100%; padding: 5px;">
+                    <option value="1">Precio de Mercado (Standard)</option>
+                    <option value="0.8">Precio Decreciente (-20%)</option>
+                    <option value="1.2">Precio Creciente (+20%)</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="header-tool">
+                SUELOS Y CAPITAL (RD II)
+                <button class="btn btn-add" onclick="core.addSuelo()" style="width:auto; margin:0; padding:2px 10px">+</button>
+            </div>
+            <div id="controles-suelos"></div>
+            <button class="btn btn-add" onclick="core.addSuelo()">Añadir Nuevo Suelo</button>
+        </div>
+    </div>
+
+    <div class="main-content">
+        <div class="summary-bar">
+            <div class="summary-item"><small>OFERTA TOTAL</small><span id="sumOferta">0</span></div>
+            <div class="summary-item"><small>PRECIO MERCADO</small><span id="sumPrecio">$0</span></div>
+            <div class="summary-item"><small>RENTA TOTAL</small><span id="sumRenta">$0</span></div>
+        </div>
+
+        <div class="card chart-container">
+            <canvas id="rentaChart"></canvas>
+        </div>
+
+        <div class="card">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Suelo</th>
+                        <th>K ($)</th>
+                        <th>Q (Prod)</th>
+                        <th>Prod. Marginal</th>
+                        <th>P. Individual</th>
+                        <th>Renta / Plusg.</th>
+                        <th>Acción</th>
+                    </tr>
+                </thead>
+                <tbody id="tabla-cuerpo"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+/**
+ * Lógica de Negocio (Core)
+ */
+const core = {
+    suelos: [
+        { id: Date.now()+1, nombre: "Suelo A", k: 100, fert: 0.8 },
+        { id: Date.now()+2, nombre: "Suelo B", k: 100, fert: 1.2 },
+        { id: Date.now()+3, nombre: "Suelo C", k: 100, fert: 1.6 }
+    ],
+
+    addSuelo() {
+        const char = String.fromCharCode(65 + this.suelos.length);
+        this.suelos.push({ id: Date.now(), nombre: "Suelo " + char, k: 100, fert: 1.0 });
+        ui.initControles();
+        ui.render();
+    },
+
+    deleteSuelo(id) {
+        this.suelos = this.suelos.filter(s => s.id !== id);
+        ui.initControles();
+        ui.render();
+    },
+
+    // Simulación de rendimientos decrecientes: Q crece con la raíz del capital
+    // Esto evita que el usuario genere productividad infinita linealmente
+    getProd(k, fert) {
+        return Math.round(Math.sqrt(k) * (fert * 5));
+    }
+};
+
+/**
+ * Interfaz de Usuario (UI)
+ */
+const ui = {
+    chart: null,
+
+    initControles() {
+        const container = document.getElementById('controles-suelos');
+        container.innerHTML = core.suelos.map(s => `
+            <div class="control-group" id="ctrl-${s.id}">
+                <div style="display:flex; justify-content:space-between">
+                    <strong>${s.nombre}</strong>
+                    <button class="btn btn-del" onclick="core.deleteSuelo(${s.id})">Eliminar</button>
+                </div>
+                <div class="slider-box">
+                    <small>K:</small>
+                    <input type="range" min="0" max="500" value="${s.k}" 
+                           oninput="ui.updateSuelo(${s.id}, 'k', this.value)">
+                    <span class="val">$${s.k}</span>
+                </div>
+                <div class="slider-box">
+                    <small>Fert:</small>
+                    <input type="range" min="0.1" max="3" step="0.1" value="${s.fert}" 
+                           oninput="ui.updateSuelo(${s.id}, 'fert', this.value)">
+                    <span class="val">x${s.fert}</span>
+                </div>
+            </div>
+        `).join('');
+    },
+
+    updateSuelo(id, campo, valor) {
+        const suelo = core.suelos.find(s => s.id === id);
+        suelo[campo] = parseFloat(valor);
+        this.render();
+    },
+
+    render() {
+        const demanda = parseFloat(document.getElementById('demanda').value);
+        const modPrecio = parseFloat(document.getElementById('casoRD2').value);
+        document.getElementById('vDemanda').innerText = demanda;
+
+        // 1. Calcular datos individuales
+        let lista = core.suelos.map(s => {
+            const q = core.getProd(s.k, s.fert);
+            return { ...s, q, pInd: q > 0 ? s.k / q : 0 };
+        }).sort((a, b) => a.pInd - b.pInd);
+
+        // 2. Determinar precio de mercado (Suelo regulador)
+        let acumulado = 0;
+        let pMercadoBase = 0;
+        let reguladorId = null;
+        let activosIds = [];
+
+        lista.forEach(s => {
+            if (acumulado < demanda && s.q > 0) {
+                acumulado += s.q;
+                pMercadoBase = s.pInd;
+                reguladorId = s.id;
+                activosIds.push(s.id);
+            }
+        });
+
+        const pMercado = pMercadoBase * modPrecio;
+        let rentaTotal = 0;
+
+        // 3. Renderizar Tabla
+        const tbody = document.getElementById('tabla-cuerpo');
+        tbody.innerHTML = "";
+        
+        let chartLabels = [];
+        let chartData = [];
+
+        lista.forEach(s => {
+            const esActivo = activosIds.includes(s.id);
+            const renta = esActivo ? Math.max(0, (pMercado * s.q) - s.k) : 0;
+            rentaTotal += renta;
+
+            chartLabels.push(s.nombre);
+            chartData.push(renta.toFixed(2));
+
+            const clase = esActivo ? (s.id === reguladorId ? 'row-regulador' : 'row-active') : 'row-inactive';
+            
+            tbody.innerHTML += `
+                <tr class="${clase}">
+                    <td>${s.nombre} ${s.id === reguladorId ? '<b>(Regulador)</b>' : ''}</td>
+                    <td>$${s.k}</td>
+                    <td>${s.q}</td>
+                    <td>${(s.q / Math.sqrt(s.k || 1)).toFixed(2)}</td>
+                    <td>$${s.pInd.toFixed(2)}</td>
+                    <td>$${renta.toFixed(2)}</td>
+                    <td>-</td>
+                </tr>
+            `;
+        });
+
+        // 4. Actualizar Resumen y Gráfico
+        document.getElementById('sumOferta').innerText = acumulado.toFixed(0);
+        document.getElementById('sumPrecio').innerText = `$${pMercado.toFixed(2)}`;
+        document.getElementById('sumRenta').innerText = `$${rentaTotal.toFixed(2)}`;
+        this.updateChart(chartLabels, chartData);
+        
+        // Actualizar valores en los sliders (labels)
+        core.suelos.forEach(s => {
+            const ctrl = document.getElementById(`ctrl-${s.id}`);
+            if(ctrl) {
+                ctrl.querySelector('.val').innerText = `$${s.k}`;
+            }
+        });
+    },
+
+    updateChart(labels, data) {
+        const ctx = document.getElementById('rentaChart').getContext('2d');
+        if (this.chart) {
+            this.chart.data.labels = labels;
+            this.chart.data.datasets[0].data = data;
+            this.chart.update();
+        } else {
+            this.chart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Renta Diferencial ($)',
+                        data: data,
+                        backgroundColor: '#a30000',
+                        borderRadius: 5
+                    }]
+                },
+                options: { maintainAspectRatio: false, plugins: { legend: { display: false } } }
+            });
+        }
+    }
+};
+
+// Iniciar
+ui.initControles();
+ui.render();
+</script>
+</body>
+</html>
